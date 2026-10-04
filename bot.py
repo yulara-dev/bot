@@ -224,6 +224,17 @@ class StockTradeView(discord.ui.View):
         await i.response.edit_message(embed=self.make_embed(), view=self)
 
 
+class PayModal(discord.ui.Modal, title='💸 PAY VND'):
+    user_id = discord.ui.TextInput(label='ID Discord người nhận')
+    amount = discord.ui.TextInput(label='Số tiền VND')
+    async def on_submit(self, i):
+        try: uid=int(self.user_id.value); amount=int(self.amount.value.replace(',','').replace('.','')); assert amount>0 and uid!=i.user.id
+        except: return await i.response.send_message('❌ Thông tin không hợp lệ.', ephemeral=True)
+        u=user(i.user.id)
+        if u[1] < amount: return await i.response.send_message(f'❌ Không đủ tiền: {fmt(u[1])} VND.', ephemeral=True)
+        user(uid); cur.execute('UPDATE users SET vnd=vnd-? WHERE user_id=?',(amount,i.user.id)); cur.execute('UPDATE users SET vnd=vnd+? WHERE user_id=?',(amount,uid)); db.commit()
+        await i.response.send_message(f'✅ Đã chuyển **{fmt(amount)} VND** cho <@{uid}>.', ephemeral=True)
+
 class MainView(discord.ui.View):
     def __init__(self): super().__init__(timeout=None)
     @discord.ui.button(label='📊 Thị trường',style=discord.ButtonStyle.primary,custom_id='market')
@@ -237,6 +248,8 @@ class MainView(discord.ui.View):
     async def buy(self,i,b): await i.response.send_modal(BuyModal())
     @discord.ui.button(label='💸 Bán',style=discord.ButtonStyle.danger,custom_id='sell')
     async def sell(self,i,b): await i.response.send_modal(SellModal())
+    @discord.ui.button(label='💸 Pay',style=discord.ButtonStyle.secondary,custom_id='pay')
+    async def pay(self,i,b): await i.response.send_modal(PayModal())
     @discord.ui.button(label='🏦 Ngân hàng',style=discord.ButtonStyle.secondary,custom_id='bank')
     async def bank(self,i,b):
         u=user(i.user.id); e=discord.Embed(title='🏦 NGÂN HÀNG',color=discord.Color.gold()); e.description=f'👤 {i.user.mention}\n\n🇻🇳 VND: **{fmt(u[1])} ₫**\n🇺🇸 USD: **${u[2]:,.2f}**\n₿ BTC: **{u[3]:.8f}**\n\n💱 Tỷ giá giả lập\n1 USD = 26,000 VND\n1 BTC = 2,800,000,000 VND'; await i.response.send_message(embed=e,ephemeral=True)
