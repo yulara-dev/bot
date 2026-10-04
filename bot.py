@@ -775,87 +775,89 @@ class MarketView(discord.ui.View):
 
 
 # =========================================================
-# MARKET UPDATE
+# MARKET UPDATE - TỰ ĐỘNG MỖI 1 GIÂY
 # =========================================================
 
 @tasks.loop(seconds=1)
 async def market_update():
 
-    remove_sessions = []
+    for message_id, session in list(sessions.items()):
 
-    for message_id, session in list(
-        sessions.items()
-    ):
-
-        if session["crashed"]:
+        # Phiên đã sập thì bỏ qua
+        if session.get("crashed"):
             continue
-
-        capital = get_exchange_cash(
-            session["user_id"],
-            session["exchange"]
-        )
-
-        if capital <= 0:
-
-            remove_sessions.append(
-                message_id
-            )
-
-            continue
-
-        session["capital"] = capital
-
-        # Biến động mỗi giây
-        delta = generate_movement(
-            capital
-        )
-
-        session["delta"] = delta
-
-        # Không cho vốn âm
-        if delta < 0:
-
-            new_amount = max(
-                0,
-                capital + delta
-            )
-
-            set_exchange_cash(
-                session["user_id"],
-                session["exchange"],
-                new_amount
-            )
-
-            session["capital"] = new_amount
-
-        else:
-
-            new_amount = capital + delta
-
-            set_exchange_cash(
-                session["user_id"],
-                session["exchange"],
-                new_amount
-            )
-
-            session["capital"] = new_amount
 
         try:
+            user_id = session["user_id"]
+            exchange = session["exchange"]
+
+            # Lấy số vốn hiện tại trên sàn
+            current_money = get_exchange_cash(
+                user_id,
+                exchange
+            )
+
+            if current_money <= 0:
+                continue
+
+            # Random biến động
+            percent = random.uniform(
+                -0.02,
+                0.02
+            )
+
+            delta = int(
+                current_money * percent
+            )
+
+            # Tránh biến động = 0
+            if delta == 0:
+                delta = random.choice([
+                    1000,
+                    -1000,
+                    2000,
+                    -2000,
+                    5000,
+                    -5000
+                ])
+
+            new_money = max(
+                0,
+                current_money + delta
+            )
+
+            # Lưu tiền mới
+            set_exchange_cash(
+                user_id,
+                exchange,
+                new_money
+            )
+
+            # Cập nhật session
+            session["capital"] = new_money
+            session["delta"] = delta
+
+            # Lấy channel
+            channel_id = session.get(
+                "channel_id"
+            )
+
+            if not channel_id:
+                continue
 
             channel = bot.get_channel(
-                session.get(
-                    "channel_id",
-                    0
-                )
+                channel_id
             )
 
             if channel is None:
                 continue
 
+            # Lấy message
             message = await channel.fetch_message(
                 message_id
             )
 
+            # Cập nhật bảng
             await message.edit(
                 embed=make_market_embed(
                     session
@@ -863,15 +865,21 @@ async def market_update():
                 view=session["view"]
             )
 
-        except Exception:
+        except discord.NotFound:
+
+            sessions.pop(
+                message_id,
+                None
+            )
+
+        except discord.HTTPException:
             pass
 
-    for message_id in remove_sessions:
+        except Exception as e:
 
-        sessions.pop(
-            message_id,
-            None
-        )
+            print(
+                f"❌ Market update error: {e}"
+            )
 
 
 # =========================================================
