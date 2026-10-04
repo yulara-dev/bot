@@ -1,5 +1,6 @@
 import discord
 from discord.ext import commands
+from discord import ui
 import sqlite3
 import random
 import asyncio
@@ -13,6 +14,11 @@ from datetime import datetime, timedelta
 
 TOKEN = os.getenv("DISCORD_TOKEN") or os.getenv("TOKEN")
 DB_FILE = "stock_bot.db"
+
+
+# =========================================================
+# BOT
+# =========================================================
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -28,11 +34,7 @@ bot = commands.Bot(
 # DATABASE
 # =========================================================
 
-db = sqlite3.connect(
-    DB_FILE,
-    check_same_thread=False
-)
-
+db = sqlite3.connect(DB_FILE)
 cursor = db.cursor()
 
 cursor.execute("""
@@ -50,7 +52,7 @@ CREATE TABLE IF NOT EXISTS exchange_cash (
     user_id INTEGER,
     exchange TEXT,
     vnd INTEGER DEFAULT 0,
-    PRIMARY KEY(user_id, exchange)
+    PRIMARY KEY (user_id, exchange)
 )
 """)
 
@@ -58,32 +60,133 @@ db.commit()
 
 
 # =========================================================
-# USER FUNCTIONS
+# STOCKS
+# =========================================================
+
+STOCKS = {
+    "NASDAQ": [
+        ("AAPL", "Apple"),
+        ("MSFT", "Microsoft"),
+        ("NVDA", "NVIDIA"),
+        ("TSLA", "Tesla"),
+        ("AMZN", "Amazon"),
+        ("META", "Meta")
+    ],
+
+    "NYSE": [
+        ("JPM", "JPMorgan Chase"),
+        ("KO", "Coca-Cola"),
+        ("DIS", "Disney"),
+        ("WMT", "Walmart"),
+        ("V", "Visa")
+    ],
+
+    "HOSE": [
+        ("VIC", "Vingroup"),
+        ("VHM", "Vinhomes"),
+        ("FPT", "FPT"),
+        ("HPG", "Hoa Phat"),
+        ("VCB", "Vietcombank")
+    ],
+
+    "TSE": [
+        ("7203", "Toyota"),
+        ("9984", "SoftBank"),
+        ("6758", "Sony")
+    ],
+
+    "HKEX": [
+        ("0700", "Tencent"),
+        ("9988", "Alibaba"),
+        ("3690", "Meituan")
+    ],
+
+    "HNX": [
+        ("PVS", "PTSC"),
+        ("SHS", "SHS"),
+        ("CEO", "CEO Group")
+    ],
+
+    "LSE": [
+        ("SHEL", "Shell"),
+        ("AZN", "AstraZeneca"),
+        ("HSBA", "HSBC")
+    ],
+
+    "SSE": [
+        ("600519", "Kweichow Moutai"),
+        ("601318", "Ping An")
+    ],
+
+    "KRX": [
+        ("005930", "Samsung Electronics"),
+        ("000660", "SK Hynix"),
+        ("035420", "NAVER")
+    ],
+
+    "SGX": [
+        ("D05", "DBS"),
+        ("O39", "OCBC"),
+        ("U11", "UOB")
+    ],
+
+    "UPCoM": [
+        ("ACV", "Airports Corporation"),
+        ("VEA", "Vietnam Engine")
+    ]
+}
+
+EXCHANGES = list(STOCKS.keys())
+
+
+# =========================================================
+# MONEY
+# =========================================================
+
+def money(amount):
+    return f"{int(amount):,}".replace(",", ".")
+
+
+def parse_money(value):
+    value = str(value).strip().lower()
+
+    multipliers = {
+        "k": 1_000,
+        "m": 1_000_000,
+        "b": 1_000_000_000,
+        "t": 1_000_000_000_000
+    }
+
+    try:
+        if value[-1] in multipliers:
+            number = float(value[:-1])
+            amount = int(number * multipliers[value[-1]])
+        else:
+            value = value.replace(".", "").replace(",", "")
+            amount = int(value)
+
+        if amount < 0:
+            return None
+
+        return amount
+
+    except (ValueError, IndexError):
+        return None
+
+
+# =========================================================
+# USER DATABASE FUNCTIONS
 # =========================================================
 
 def ensure_user(user_id):
-
     cursor.execute(
-        "SELECT user_id FROM users WHERE user_id = ?",
+        "INSERT OR IGNORE INTO users (user_id, vnd, usd, btc) VALUES (?, 0, 0, 0)",
         (user_id,)
     )
-
-    if cursor.fetchone() is None:
-
-        cursor.execute(
-            """
-            INSERT INTO users
-            (user_id, vnd, usd, btc)
-            VALUES (?, 0, 0, 0)
-            """,
-            (user_id,)
-        )
-
-        db.commit()
+    db.commit()
 
 
 def get_vnd(user_id):
-
     ensure_user(user_id)
 
     cursor.execute(
@@ -93,249 +196,68 @@ def get_vnd(user_id):
 
     row = cursor.fetchone()
 
-    return row[0] if row else 0
+    if row:
+        return row[0]
+
+    return 0
 
 
 def add_vnd(user_id, amount):
-
     ensure_user(user_id)
 
     cursor.execute(
-        """
-        UPDATE users
-        SET vnd = vnd + ?
-        WHERE user_id = ?
-        """,
+        "UPDATE users SET vnd = vnd + ? WHERE user_id = ?",
         (amount, user_id)
     )
 
     db.commit()
 
 
-def get_exchange_cash(user_id, exchange):
+def set_vnd(user_id, amount):
+    ensure_user(user_id)
 
     cursor.execute(
-        """
-        SELECT vnd
-        FROM exchange_cash
-        WHERE user_id = ?
-        AND exchange = ?
-        """,
-        (user_id, exchange)
-    )
-
-    row = cursor.fetchone()
-
-    return row[0] if row else 0
-
-
-def set_exchange_cash(
-    user_id,
-    exchange,
-    amount
-):
-
-    cursor.execute(
-        """
-        INSERT INTO exchange_cash
-        (user_id, exchange, vnd)
-        VALUES (?, ?, ?)
-
-        ON CONFLICT(user_id, exchange)
-        DO UPDATE SET
-            vnd = excluded.vnd
-        """,
-        (
-            user_id,
-            exchange,
-            int(amount)
-        )
+        "UPDATE users SET vnd = ? WHERE user_id = ?",
+        (amount, user_id)
     )
 
     db.commit()
 
 
 # =========================================================
-# MONEY FORMAT
+# EXCHANGE CASH
 # =========================================================
 
-def money(amount):
+def get_exchange_cash(user_id, exchange):
+    cursor.execute(
+        """
+        SELECT vnd
+        FROM exchange_cash
+        WHERE user_id = ? AND exchange = ?
+        """,
+        (user_id, exchange)
+    )
 
-    return f"{int(amount):,}".replace(",", ".")
+    row = cursor.fetchone()
 
+    if row:
+        return row[0]
 
-# =========================================================
-# MONEY INPUT
-# =========================================================
-
-def parse_money(value):
-
-    """
-    Hỗ trợ:
-
-    1k
-    10k
-    100k
-
-    1m
-    10m
-    100m
-
-    1b
-    10b
-    100b
-
-    1t
-    10t
-    100t
-
-    Ngoài ra vẫn nhập được:
-
-    100000
-    1000000
-    1000000000
-    """
-
-    if value is None:
-        return None
-
-    value = str(value).strip().lower()
-
-    if not value:
-        return None
-
-    multipliers = {
-        "k": 1_000,
-        "m": 1_000_000,
-        "b": 1_000_000_000,
-        "t": 1_000_000_000_000,
-    }
-
-    try:
-
-        suffix = value[-1]
-
-        if suffix in multipliers:
-
-            number = float(
-                value[:-1]
-            )
-
-            if number < 0:
-                return None
-
-            amount = int(
-                number * multipliers[suffix]
-            )
-
-        else:
-
-            value = (
-                value
-                .replace(".", "")
-                .replace(",", "")
-            )
-
-            amount = int(value)
-
-        if amount < 0:
-            return None
-
-        return amount
-
-    except (
-        ValueError,
-        IndexError
-    ):
-        return None
+    return 0
 
 
-# =========================================================
-# STOCK DATA
-# =========================================================
+def set_exchange_cash(user_id, exchange, amount):
+    cursor.execute(
+        """
+        INSERT INTO exchange_cash (user_id, exchange, vnd)
+        VALUES (?, ?, ?)
+        ON CONFLICT(user_id, exchange)
+        DO UPDATE SET vnd = excluded.vnd
+        """,
+        (user_id, exchange, int(amount))
+    )
 
-STOCKS = {
-
-    "NASDAQ": [
-        ("AAPL", "Apple"),
-        ("MSFT", "Microsoft"),
-        ("NVDA", "NVIDIA"),
-        ("TSLA", "Tesla"),
-        ("AMZN", "Amazon"),
-        ("META", "Meta"),
-    ],
-
-    "NYSE": [
-        ("JPM", "JPMorgan Chase"),
-        ("KO", "Coca-Cola"),
-        ("DIS", "Disney"),
-        ("WMT", "Walmart"),
-        ("V", "Visa"),
-    ],
-
-    "HOSE": [
-        ("VIC", "Vingroup"),
-        ("VHM", "Vinhomes"),
-        ("FPT", "FPT"),
-        ("HPG", "Hoa Phat"),
-        ("VCB", "Vietcombank"),
-    ],
-
-    "TSE": [
-        ("7203", "Toyota"),
-        ("9984", "SoftBank"),
-        ("6758", "Sony"),
-    ],
-
-    "HKEX": [
-        ("0700", "Tencent"),
-        ("9988", "Alibaba"),
-        ("3690", "Meituan"),
-    ],
-
-    "HNX": [
-        ("PVS", "PTSC"),
-        ("SHS", "SHS"),
-        ("CEO", "CEO Group"),
-    ],
-
-    "LSE": [
-        ("SHEL", "Shell"),
-        ("AZN", "AstraZeneca"),
-        ("HSBA", "HSBC"),
-    ],
-
-    "SSE": [
-        ("600519", "Kweichow Moutai"),
-        ("601318", "Ping An"),
-    ],
-
-    "KRX": [
-        ("005930", "Samsung Electronics"),
-        ("000660", "SK Hynix"),
-        ("035420", "NAVER"),
-    ],
-
-    "SGX": [
-        ("D05", "DBS"),
-        ("O39", "OCBC"),
-        ("U11", "UOB"),
-    ],
-
-    "UPCoM": [
-        ("ACV", "Airports Corporation"),
-        ("VEA", "Vietnam Engine"),
-    ],
-}
-
-EXCHANGES = list(STOCKS.keys())
-
-
-# =========================================================
-# ACTIVE SESSIONS
-# =========================================================
-
-sessions = {}
+    db.commit()
 
 
 # =========================================================
@@ -343,32 +265,20 @@ sessions = {}
 # =========================================================
 
 def generate_movement(capital):
-
     if capital <= 0:
         return 0
 
-    # 70% lời
+    # 70% tăng
     if random.random() < 0.70:
+        percent = random.uniform(0.005, 0.05)
 
-        percent = random.uniform(
-            0.005,
-            0.05
-        )
-
-    # 30% lỗ
+    # 30% giảm
     else:
+        percent = random.uniform(-0.005, -0.02)
 
-        percent = random.uniform(
-            -0.005,
-            -0.02
-        )
-
-    delta = int(
-        capital * percent
-    )
+    delta = int(capital * percent)
 
     if delta == 0:
-
         if percent > 0:
             delta = 1000
         else:
@@ -378,684 +288,216 @@ def generate_movement(capital):
 
 
 # =========================================================
-# EMBEDS
+# SESSION
 # =========================================================
 
-def make_exchange_embed():
-
-    return discord.Embed(
-        title="🏦 Chọn sàn",
-        description=(
-            "Chọn sàn giao dịch bên dưới."
-        ),
-        color=discord.Color.blurple()
-    )
+sessions = {}
 
 
-def make_stock_embed(
-    exchange,
-    symbol,
-    company
-):
-
-    return discord.Embed(
-        title="📈 Chọn cổ phiếu",
-        description=(
-            f"🏦 **Sàn:** `{exchange}`\n"
-            f"📈 **Cổ phiếu:** `{symbol}`\n"
-            f"🏢 **Công ty:** {company}\n\n"
-            "Chọn cổ phiếu bên dưới."
-        ),
-        color=discord.Color.blurple()
-    )
-
-
-def make_capital_embed(
-    exchange,
-    symbol,
-    company
-):
-
-    return discord.Embed(
-        title="💰 Nhập số tiền vốn",
-        description=(
-            f"🏦 **Sàn:** `{exchange}`\n"
-            f"📈 **Cổ phiếu:** `{symbol}`\n"
-            f"🏢 **Công ty:** {company}\n\n"
-            "Nhấn **💰 Nhập vốn** để bắt đầu."
-        ),
-        color=discord.Color.gold()
-    )
-
+# =========================================================
+# MARKET EMBED
+# =========================================================
 
 def make_market_embed(session):
+    capital = get_exchange_cash(
+        session["user_id"],
+        session["exchange"]
+    )
 
-    exchange = session["exchange"]
-    symbol = session["symbol"]
+    delta = session.get("delta", 0)
 
-    capital = session["capital"]
-    delta = session["delta"]
-
-    if delta >= 0:
-
-        movement = (
-            f"🟢 **+{money(delta)} VND**"
-        )
-
-        color = discord.Color.green()
-
+    if delta > 0:
+        change_text = f"🟢 +{money(delta)} VND"
+    elif delta < 0:
+        change_text = f"🔴 -{money(abs(delta))} VND"
     else:
-
-        movement = (
-            f"🔴 **-{money(abs(delta))} VND**"
-        )
-
-        color = discord.Color.red()
+        change_text = "⚪ 0 VND"
 
     embed = discord.Embed(
-        title=f"📈 {exchange} • {symbol}",
-        color=color
+        color=discord.Color.green() if delta >= 0 else discord.Color.red()
     )
 
-    embed.description = (
-        f"💰 **Vốn hiện tại:** "
-        f"{money(capital)} VND\n\n"
-        f"📊 **Biến động:**\n"
-        f"{movement}"
+    embed.add_field(
+        name="🏦 Sàn",
+        value=session["exchange"],
+        inline=True
     )
 
-    return embed
+    embed.add_field(
+        name="📈 Cổ phiếu",
+        value=session["symbol"],
+        inline=True
+    )
 
+    embed.add_field(
+        name="🏢 Công ty",
+        value=session["company"],
+        inline=True
+    )
 
-def make_crash_embed(session):
+    embed.add_field(
+        name="💰 Vốn hiện tại",
+        value=f"**{money(capital)} VND**",
+        inline=False
+    )
 
-    exchange = session["exchange"]
-    symbol = session["symbol"]
-
-    lost = session["crash_loss"]
-    remaining = session["capital"]
-
-    embed = discord.Embed(
-        title="💥 SẬP SÀN!",
-        description=(
-            f"💵 **Mất:** "
-            f"-{money(lost)} VND\n\n"
-            f"💰 **Còn lại:** "
-            f"{money(remaining)} VND\n\n"
-            f"📉 **Sàn:** "
-            f"**{exchange} • {symbol}**"
-        ),
-        color=discord.Color.red()
+    embed.add_field(
+        name="📊 Thay đổi",
+        value=change_text,
+        inline=False
     )
 
     return embed
 
 
 # =========================================================
-# EXCHANGE SELECT
+# TAKE VIEW
 # =========================================================
 
-class ExchangeSelect(
-    discord.ui.Select
-):
+class MarketView(ui.View):
 
-    def __init__(
-        self,
-        user_id
-    ):
+    def __init__(self, session):
+        super().__init__(timeout=None)
 
-        self.user_id = user_id
+        self.session = session
 
-        options = []
-
-        for exchange in EXCHANGES:
-
-            options.append(
-                discord.SelectOption(
-                    label=exchange,
-                    value=exchange,
-                    emoji="🏦"
-                )
-            )
-
-        super().__init__(
-            placeholder="🏦 Chọn sàn...",
-            min_values=1,
-            max_values=1,
-            options=options
-        )
-
-    async def callback(
-        self,
-        interaction
-    ):
-
-        if interaction.user.id != self.user_id:
-
-            await interaction.response.send_message(
-                "❌ Đây không phải bảng của bạn.",
-                ephemeral=True
-            )
-
-            return
-
-        exchange = self.values[0]
-
-        symbol, company = STOCKS[
-            exchange
-        ][0]
-
-        await interaction.response.edit_message(
-
-            embed=make_stock_embed(
-                exchange,
-                symbol,
-                company
-            ),
-
-            view=StockSelectView(
-                self.user_id,
-                exchange
-            )
-        )
-
-
-class ExchangeSelectView(
-    discord.ui.View
-):
-
-    def __init__(
-        self,
-        user_id
-    ):
-
-        super().__init__(
-            timeout=180
-        )
-
-        self.add_item(
-            ExchangeSelect(
-                user_id
-            )
-        )
-
-
-# =========================================================
-# STOCK SELECT
-# =========================================================
-
-class StockSelect(
-    discord.ui.Select
-):
-
-    def __init__(
-        self,
-        user_id,
-        exchange
-    ):
-
-        self.user_id = user_id
-        self.exchange = exchange
-
-        options = []
-
-        for symbol, company in STOCKS[
-            exchange
-        ]:
-
-            options.append(
-                discord.SelectOption(
-                    label=symbol,
-                    description=company[:100],
-                    value=symbol,
-                    emoji="📈"
-                )
-            )
-
-        super().__init__(
-            placeholder="📈 Chọn cổ phiếu...",
-            min_values=1,
-            max_values=1,
-            options=options
-        )
-
-    async def callback(
-        self,
-        interaction
-    ):
-
-        if interaction.user.id != self.user_id:
-
-            await interaction.response.send_message(
-                "❌ Đây không phải bảng của bạn.",
-                ephemeral=True
-            )
-
-            return
-
-        symbol = self.values[0]
-
-        company = next(
-            company
-            for stock_symbol, company
-            in STOCKS[self.exchange]
-            if stock_symbol == symbol
-        )
-
-        await interaction.response.edit_message(
-
-            embed=make_capital_embed(
-                self.exchange,
-                symbol,
-                company
-            ),
-
-            view=CapitalView(
-                self.user_id,
-                self.exchange,
-                symbol,
-                company
-            )
-        )
-
-
-class StockSelectView(
-    discord.ui.View
-):
-
-    def __init__(
-        self,
-        user_id,
-        exchange
-    ):
-
-        super().__init__(
-            timeout=180
-        )
-
-        self.add_item(
-            StockSelect(
-                user_id,
-                exchange
-            )
-        )
-
-
-# =========================================================
-# CAPITAL VIEW
-# =========================================================
-
-class CapitalView(
-    discord.ui.View
-):
-
-    def __init__(
-        self,
-        user_id,
-        exchange,
-        symbol,
-        company
-    ):
-
-        super().__init__(
-            timeout=180
-        )
-
-        self.user_id = user_id
-        self.exchange = exchange
-        self.symbol = symbol
-        self.company = company
-
-    async def interaction_check(
-        self,
-        interaction
-    ):
-
-        if interaction.user.id != self.user_id:
-
-            await interaction.response.send_message(
-                "❌ Đây không phải bảng của bạn.",
-                ephemeral=True
-            )
-
-            return False
-
-        return True
-
-    @discord.ui.button(
-        label="💰 Nhập vốn",
-        style=discord.ButtonStyle.primary
-    )
-    async def capital(
-        self,
-        interaction,
-        button
-    ):
-
-        await interaction.response.send_modal(
-
-            CapitalModal(
-                self.user_id,
-                self.exchange,
-                self.symbol,
-                self.company
-            )
-        )
-
-
-# =========================================================
-# CAPITAL MODAL
-# =========================================================
-
-class CapitalModal(
-    discord.ui.Modal
-):
-
-    def __init__(
-        self,
-        user_id,
-        exchange,
-        symbol,
-        company
-    ):
-
-        super().__init__(
-            title="💰 Nhập số tiền vốn"
-        )
-
-        self.user_id = user_id
-        self.exchange = exchange
-        self.symbol = symbol
-        self.company = company
-
-        self.amount = discord.ui.TextInput(
-            label="Số tiền vốn",
-            placeholder="VD: 100k / 10m / 1b / 1t",
-            required=True,
-            min_length=1,
-            max_length=30
-        )
-
-        self.add_item(
-            self.amount
-        )
-
-    async def on_submit(
-        self,
-        interaction
-    ):
-
-        capital = parse_money(
-            self.amount.value
-        )
-
-        if capital is None:
-
-            await interaction.response.send_message(
-                (
-                    "❌ Số tiền không hợp lệ.\n"
-                    "Ví dụ: `1k`, `10k`, `100k`, "
-                    "`1m`, `10m`, `1b`, `1t`."
-                ),
-                ephemeral=True
-            )
-
-            return
-
-        if capital <= 0:
-
-            await interaction.response.send_message(
-                "❌ Số tiền phải lớn hơn 0.",
-                ephemeral=True
-            )
-
-            return
-
-        balance = get_vnd(
-            self.user_id
-        )
-
-        if balance < capital:
-
-            await interaction.response.send_message(
-
-                (
-                    "❌ Không đủ tiền.\n\n"
-                    f"💰 Bạn có: "
-                    f"**{money(balance)} VND**\n"
-                    f"💵 Cần: "
-                    f"**{money(capital)} VND**"
-                ),
-
-                ephemeral=True
-            )
-
-            return
-
-        # Trừ ví
-        add_vnd(
-            self.user_id,
-            -capital
-        )
-
-        # Nạp vào sàn
-        set_exchange_cash(
-            self.user_id,
-            self.exchange,
-            capital
-        )
-
-        session = {
-
-            "user_id": self.user_id,
-
-            "exchange": self.exchange,
-
-            "symbol": self.symbol,
-
-            "company": self.company,
-
-            "capital": capital,
-
-            "delta": 0,
-
-            "crashed": False,
-
-            "ended": False,
-
-            "crash_loss": 0,
-
-            "message": None,
-
-            "view": None,
-
-            "market_task": None,
-
-            "crash_task": None
-        }
-
-        market_view = MarketView(
-            self.user_id
-        )
-
-        session["view"] = market_view
-
-        await interaction.response.edit_message(
-
-            embed=make_market_embed(
-                session
-            ),
-
-            view=market_view
-        )
-
-        try:
-
-            message = (
-                await interaction.original_response()
-            )
-
-        except Exception:
-
-            message = interaction.message
-
-        session["message"] = message
-
-        sessions[
-            message.id
-        ] = session
-
-        session["market_task"] = (
-            asyncio.create_task(
-                market_loop(
-                    session
-                )
-            )
-        )
-
-        session["crash_task"] = (
-            asyncio.create_task(
-                crash_timer(
-                    session
-                )
-            )
-        )
-
-
-# =========================================================
-# MARKET VIEW
-# =========================================================
-
-class MarketView(
-    discord.ui.View
-):
-
-    def __init__(
-        self,
-        user_id
-    ):
-
-        super().__init__(
-            timeout=None
-        )
-
-        self.user_id = user_id
-
-    async def interaction_check(
-        self,
-        interaction
-    ):
-
-        if interaction.user.id != self.user_id:
-
-            await interaction.response.send_message(
-                "❌ Đây không phải bảng của bạn.",
-                ephemeral=True
-            )
-
-            return False
-
-        return True
-
-    @discord.ui.button(
-        label="💸 Take",
-        style=discord.ButtonStyle.success,
-        custom_id="stock_take"
+    @ui.button(
+        label="Take",
+        emoji="💸",
+        style=discord.ButtonStyle.green
     )
     async def take(
         self,
-        interaction,
-        button
+        interaction: discord.Interaction,
+        button: ui.Button
     ):
 
-        message_id = (
-            interaction.message.id
-        )
+        session = self.session
 
-        session = sessions.get(
-            message_id
-        )
-
-        if session is None:
-
+        if session["ended"] or session["crashed"]:
             await interaction.response.send_message(
-                "❌ Phiên giao dịch không còn tồn tại.",
+                "❌ Phiên giao dịch đã kết thúc.",
                 ephemeral=True
             )
-
             return
 
-        if session["crashed"]:
-
+        if interaction.user.id != session["user_id"]:
             await interaction.response.send_message(
-                "💥 Sàn đã sập.",
+                "❌ Đây không phải phiên giao dịch của bạn.",
                 ephemeral=True
             )
-
             return
 
         session["ended"] = True
 
-        # Dừng các task
-        market_task = session.get(
-            "market_task"
-        )
-
-        crash_task = session.get(
-            "crash_task"
-        )
+        # Dừng market
+        market_task = session.get("market_task")
 
         if market_task:
             market_task.cancel()
+
+        # Dừng crash timer
+        crash_task = session.get("crash_task")
 
         if crash_task:
             crash_task.cancel()
 
         exchange = session["exchange"]
 
+        # Vốn ban đầu
+        original_capital = session["original_capital"]
+
+        # Vốn hiện tại
         amount = get_exchange_cash(
             self.user_id,
             exchange
         )
 
-        if amount <= 0:
+        # Tính lời / lỗ
+        difference = amount - original_capital
 
-            await interaction.response.send_message(
-                "❌ Không còn tiền trên sàn.",
-                ephemeral=True
-            )
+        if difference > 0:
+            profit_text = f"+{money(difference)} VND"
+            loss_text = "N/A"
 
-            return
+        elif difference < 0:
+            profit_text = "N/A"
+            loss_text = f"-{money(abs(difference))} VND"
 
-        # Xóa tiền trên sàn
+        else:
+            profit_text = "N/A"
+            loss_text = "N/A"
+
+        # Xóa tiền khỏi sàn
         set_exchange_cash(
             self.user_id,
             exchange,
             0
         )
 
-        # Trả về ví
+        # Trả tiền về ví
         add_vnd(
             self.user_id,
             amount
         )
 
-        sessions.pop(
-            message_id,
-            None
-        )
+        # Xóa session
+        message = session.get("message")
+
+        if message:
+            sessions.pop(message.id, None)
+
+        # =============================================
+        # BẢNG MỚI
+        # =============================================
 
         embed = discord.Embed(
-            title="💸 TAKE THÀNH CÔNG",
-            description=(
-                f"🏦 **Sàn:** {exchange}\n\n"
-                f"💰 **Nhận được:** "
-                f"{money(amount)} VND"
-            ),
-            color=discord.Color.green()
+            color=(
+                discord.Color.green()
+                if difference >= 0
+                else discord.Color.red()
+            )
         )
 
+        embed.add_field(
+            name="🏦 Sàn",
+            value=exchange,
+            inline=True
+        )
+
+        embed.add_field(
+            name="📈 Cổ phiếu",
+            value=session["symbol"],
+            inline=True
+        )
+
+        embed.add_field(
+            name="🏢 Công ty",
+            value=session["company"],
+            inline=True
+        )
+
+        embed.add_field(
+            name="💰 Tiền nhận về",
+            value=f"**{money(amount)} VND**",
+            inline=False
+        )
+
+        embed.add_field(
+            name="🟢 Tiền lãi",
+            value=f"**{profit_text}**",
+            inline=True
+        )
+
+        embed.add_field(
+            name="🔴 Tiền lỗ",
+            value=f"**{loss_text}**",
+            inline=True
+        )
+
+        # Xóa toàn bộ bảng cũ và thay bằng bảng mới
         await interaction.response.edit_message(
+            content=None,
             embed=embed,
             view=None
         )
@@ -1065,9 +507,7 @@ class MarketView(
 # MARKET LOOP
 # =========================================================
 
-async def market_loop(
-    session
-):
+async def market_loop(session):
 
     try:
 
@@ -1078,10 +518,7 @@ async def market_loop(
 
             await asyncio.sleep(1)
 
-            if (
-                session["ended"]
-                or session["crashed"]
-            ):
+            if session["ended"] or session["crashed"]:
                 break
 
             user_id = session["user_id"]
@@ -1113,9 +550,7 @@ async def market_loop(
             session["capital"] = new_money
             session["delta"] = delta
 
-            message = session.get(
-                "message"
-            )
+            message = session.get("message")
 
             if message is None:
                 continue
@@ -1123,11 +558,7 @@ async def market_loop(
             try:
 
                 await message.edit(
-
-                    embed=make_market_embed(
-                        session
-                    ),
-
+                    embed=make_market_embed(session),
                     view=session["view"]
                 )
 
@@ -1149,7 +580,6 @@ async def market_loop(
                 )
 
     except asyncio.CancelledError:
-
         return
 
     except Exception as e:
@@ -1164,26 +594,24 @@ async def market_loop(
 # CRASH TIMER
 # =========================================================
 
-async def crash_timer(
-    session
-):
+async def crash_timer(session):
 
     try:
 
-        # Sập ngẫu nhiên 30-60 giây
-        delay = random.randint(
+        # Sập sàn random 30 - 60 giây
+        wait_time = random.randint(
             30,
             60
         )
 
         await asyncio.sleep(
-            delay
+            wait_time
         )
 
-        if (
-            session["ended"]
-            or session["crashed"]
-        ):
+        if session["ended"]:
+            return
+
+        if session["crashed"]:
             return
 
         user_id = session["user_id"]
@@ -1197,19 +625,19 @@ async def crash_timer(
         if current_money <= 0:
             return
 
-        # Sập mất 40-100%
+        # Mất 40% - 100%
         loss_percent = random.uniform(
             0.40,
             1.00
         )
 
-        loss = int(
+        crash_loss = int(
             current_money * loss_percent
         )
 
         remaining = max(
             0,
-            current_money - loss
+            current_money - crash_loss
         )
 
         set_exchange_cash(
@@ -1218,52 +646,49 @@ async def crash_timer(
             remaining
         )
 
+        session["capital"] = remaining
+        session["crash_loss"] = crash_loss
         session["crashed"] = True
         session["ended"] = True
 
-        session["crash_loss"] = loss
-        session["capital"] = remaining
-
-        # Dừng market
+        # Dừng market loop
         market_task = session.get(
             "market_task"
         )
 
         if market_task:
-
             market_task.cancel()
 
-        message = session.get(
-            "message"
-        )
+        message = session.get("message")
 
-        if message is None:
-            return
+        if message:
 
-        try:
+            embed = discord.Embed(
+                title="💥 SẬP SÀN",
+                color=discord.Color.red()
+            )
+
+            embed.description = (
+                f"🏦 **Sàn:** {exchange}\n"
+                f"📈 **Cổ phiếu:** {session['symbol']}\n"
+                f"🏢 **Công ty:** {session['company']}\n\n"
+                f"💥 **Tiền mất:** "
+                f"**{money(crash_loss)} VND**\n"
+                f"💰 **Còn lại:** "
+                f"**{money(remaining)} VND**"
+            )
 
             await message.edit(
-
-                embed=make_crash_embed(
-                    session
-                ),
-
+                embed=embed,
                 view=None
             )
 
-        except Exception as e:
-
-            print(
-                f"❌ Crash message error: {e}"
+            sessions.pop(
+                message.id,
+                None
             )
 
-        sessions.pop(
-            message.id,
-            None
-        )
-
     except asyncio.CancelledError:
-
         return
 
     except Exception as e:
@@ -1275,25 +700,285 @@ async def crash_timer(
 
 
 # =========================================================
+# CAPITAL MODAL
+# =========================================================
+
+class CapitalModal(ui.Modal):
+
+    def __init__(
+        self,
+        user_id,
+        exchange,
+        symbol,
+        company
+    ):
+
+        super().__init__(
+            title="Nhập số tiền đầu tư"
+        )
+
+        self.user_id = user_id
+        self.exchange = exchange
+        self.symbol = symbol
+        self.company = company
+
+        self.amount = ui.TextInput(
+            label="Số tiền",
+            placeholder="VD: 100k / 10m / 1b / 1t",
+            required=True
+        )
+
+        self.add_item(
+            self.amount
+        )
+
+    async def on_submit(
+        self,
+        interaction: discord.Interaction
+    ):
+
+        capital = parse_money(
+            self.amount.value
+        )
+
+        if capital is None or capital <= 0:
+
+            await interaction.response.send_message(
+                "❌ Số tiền không hợp lệ.",
+                ephemeral=True
+            )
+
+            return
+
+        wallet = get_vnd(
+            self.user_id
+        )
+
+        if capital > wallet:
+
+            await interaction.response.send_message(
+                f"❌ Bạn chỉ có **{money(wallet)} VND**.",
+                ephemeral=True
+            )
+
+            return
+
+        # Trừ tiền ví
+        set_vnd(
+            self.user_id,
+            wallet - capital
+        )
+
+        # Đưa tiền vào sàn
+        set_exchange_cash(
+            self.user_id,
+            self.exchange,
+            capital
+        )
+
+        # Session
+        session = {
+            "user_id": self.user_id,
+
+            "exchange": self.exchange,
+            "symbol": self.symbol,
+            "company": self.company,
+
+            # QUAN TRỌNG:
+            # giữ vốn ban đầu để tính lời/lỗ
+            "original_capital": capital,
+
+            "capital": capital,
+
+            "delta": 0,
+
+            "crashed": False,
+            "ended": False,
+
+            "crash_loss": 0,
+
+            "message": None,
+            "view": None,
+
+            "market_task": None,
+            "crash_task": None
+        }
+
+        # View
+        view = MarketView(
+            session
+        )
+
+        session["view"] = view
+
+        # Embed
+        embed = make_market_embed(
+            session
+        )
+
+        await interaction.response.edit_message(
+            content=None,
+            embed=embed,
+            view=view
+        )
+
+        # Lấy message hiện tại
+        message = await interaction.original_response()
+
+        session["message"] = message
+
+        # Lưu session
+        sessions[
+            message.id
+        ] = session
+
+        # Chạy market
+        session["market_task"] = asyncio.create_task(
+            market_loop(session)
+        )
+
+        # Chạy crash timer
+        session["crash_task"] = asyncio.create_task(
+            crash_timer(session)
+        )
+
+
+# =========================================================
+# STOCK SELECT
+# =========================================================
+
+class StockSelect(ui.Select):
+
+    def __init__(self, exchange):
+
+        self.exchange = exchange
+
+        options = []
+
+        for symbol, company in STOCKS[exchange]:
+
+            options.append(
+                discord.SelectOption(
+                    label=symbol,
+                    description=company
+                )
+            )
+
+        super().__init__(
+            placeholder="Chọn cổ phiếu",
+            options=options
+        )
+
+    async def callback(
+        self,
+        interaction: discord.Interaction
+    ):
+
+        symbol = self.values[0]
+
+        company = None
+
+        for s, c in STOCKS[self.exchange]:
+
+            if s == symbol:
+                company = c
+                break
+
+        modal = CapitalModal(
+            interaction.user.id,
+            self.exchange,
+            symbol,
+            company
+        )
+
+        await interaction.response.send_modal(
+            modal
+        )
+
+
+class StockSelectView(ui.View):
+
+    def __init__(self, exchange):
+
+        super().__init__(
+            timeout=120
+        )
+
+        self.add_item(
+            StockSelect(exchange)
+        )
+
+
+# =========================================================
+# EXCHANGE SELECT
+# =========================================================
+
+class ExchangeSelect(ui.Select):
+
+    def __init__(self):
+
+        options = []
+
+        for exchange in EXCHANGES:
+
+            options.append(
+                discord.SelectOption(
+                    label=exchange,
+                    value=exchange
+                )
+            )
+
+        super().__init__(
+            placeholder="Chọn sàn",
+            options=options
+        )
+
+    async def callback(
+        self,
+        interaction: discord.Interaction
+    ):
+
+        exchange = self.values[0]
+
+        embed = discord.Embed(
+            title=f"🏦 {exchange}",
+            description="Chọn cổ phiếu muốn giao dịch."
+        )
+
+        await interaction.response.edit_message(
+            embed=embed,
+            view=StockSelectView(exchange)
+        )
+
+
+class ExchangeView(ui.View):
+
+    def __init__(self):
+
+        super().__init__(
+            timeout=120
+        )
+
+        self.add_item(
+            ExchangeSelect()
+        )
+
+
+# =========================================================
 # !STOCK
 # =========================================================
 
-@bot.command(
-    name="stock"
-)
+@bot.command()
 async def stock(ctx):
 
-    ensure_user(
-        ctx.author.id
+    embed = discord.Embed(
+        title="📈 STOCK MARKET",
+        description="Chọn sàn giao dịch bên dưới."
     )
 
     await ctx.send(
-
-        embed=make_exchange_embed(),
-
-        view=ExchangeSelectView(
-            ctx.author.id
-        )
+        embed=embed,
+        view=ExchangeView()
     )
 
 
@@ -1301,28 +986,22 @@ async def stock(ctx):
 # !BALANCE
 # =========================================================
 
-@bot.command(
-    name="balance"
-)
+@bot.command()
 async def balance(ctx):
-
-    ensure_user(
-        ctx.author.id
-    )
 
     vnd = get_vnd(
         ctx.author.id
     )
 
     embed = discord.Embed(
-        title="💰 Ví tiền",
-        description=(
-            f"💵 **VND:** "
-            f"{money(vnd)} VND\n"
-            f"💲 **USD:** 0 USD\n"
-            f"₿ **BTC:** 0 BTC"
-        ),
-        color=discord.Color.gold()
+        title="💰 SỐ DƯ",
+        color=discord.Color.green()
+    )
+
+    embed.add_field(
+        name="💵 VND",
+        value=f"**{money(vnd)} VND**",
+        inline=False
     )
 
     await ctx.send(
@@ -1334,19 +1013,21 @@ async def balance(ctx):
 # !PAY
 # =========================================================
 
-@bot.command(
-    name="pay"
-)
+@bot.command()
 async def pay(
     ctx,
-    member: discord.Member = None,
-    amount: str = None
+    member: discord.Member,
+    amount: str
 ):
 
-    if member is None or amount is None:
+    amount = parse_money(
+        amount
+    )
+
+    if amount is None or amount <= 0:
 
         await ctx.send(
-            "❌ Dùng: `!pay @người 10k`"
+            "❌ Số tiền không hợp lệ."
         )
 
         return
@@ -1354,46 +1035,19 @@ async def pay(
     if member.id == ctx.author.id:
 
         await ctx.send(
-            "❌ Không thể pay cho chính mình."
+            "❌ Không thể chuyển tiền cho chính mình."
         )
 
         return
 
-    amount = parse_money(
-        amount
-    )
-
-    if amount is None:
-
-        await ctx.send(
-            (
-                "❌ Số tiền không hợp lệ.\n"
-                "Ví dụ: `1k`, `10k`, `1m`, `1b`, `1t`."
-            )
-        )
-
-        return
-
-    if amount <= 0:
-
-        await ctx.send(
-            "❌ Số tiền phải lớn hơn 0."
-        )
-
-        return
-
-    sender_balance = get_vnd(
+    sender_money = get_vnd(
         ctx.author.id
     )
 
-    if sender_balance < amount:
+    if amount > sender_money:
 
         await ctx.send(
-            (
-                "❌ Không đủ tiền.\n"
-                f"💰 Bạn có: "
-                f"**{money(sender_balance)} VND**"
-            )
+            f"❌ Bạn chỉ có **{money(sender_money)} VND**."
         )
 
         return
@@ -1409,120 +1063,9 @@ async def pay(
     )
 
     await ctx.send(
-
-        (
-            f"💸 **{ctx.author.display_name}** "
-            f"đã pay **{money(amount)} VND** "
-            f"cho **{member.display_name}**."
-        )
-    )
-
-
-# =========================================================
-# !DEPOSIT
-# =========================================================
-
-@bot.command(
-    name="deposit"
-)
-async def deposit(
-    ctx,
-    amount: str = None
-):
-
-    if amount is None:
-
-        await ctx.send(
-            "❌ Dùng: `!deposit 10k`"
-        )
-
-        return
-
-    amount = parse_money(
-        amount
-    )
-
-    if amount is None:
-
-        await ctx.send(
-            (
-                "❌ Số tiền không hợp lệ.\n"
-                "Ví dụ: `1k`, `10m`, `1b`, `1t`."
-            )
-        )
-
-        return
-
-    if amount <= 0:
-
-        await ctx.send(
-            "❌ Số tiền phải lớn hơn 0."
-        )
-
-        return
-
-    balance = get_vnd(
-        ctx.author.id
-    )
-
-    if balance < amount:
-
-        await ctx.send(
-            "❌ Không đủ tiền."
-        )
-
-        return
-
-    await ctx.send(
-        f"🏦 Đã xử lý deposit **{money(amount)} VND**."
-    )
-
-
-# =========================================================
-# !WITHDRAW
-# =========================================================
-
-@bot.command(
-    name="withdraw"
-)
-async def withdraw(
-    ctx,
-    amount: str = None
-):
-
-    if amount is None:
-
-        await ctx.send(
-            "❌ Dùng: `!withdraw 10k`"
-        )
-
-        return
-
-    amount = parse_money(
-        amount
-    )
-
-    if amount is None:
-
-        await ctx.send(
-            (
-                "❌ Số tiền không hợp lệ.\n"
-                "Ví dụ: `1k`, `10m`, `1b`, `1t`."
-            )
-        )
-
-        return
-
-    if amount <= 0:
-
-        await ctx.send(
-            "❌ Số tiền phải lớn hơn 0."
-        )
-
-        return
-
-    await ctx.send(
-        f"💸 Đã xử lý withdraw **{money(amount)} VND**."
+        f"💸 **{ctx.author.display_name}** đã chuyển "
+        f"**{money(amount)} VND** cho "
+        f"**{member.display_name}**."
     )
 
 
@@ -1530,22 +1073,18 @@ async def withdraw(
 # !DAILY
 # =========================================================
 
-@bot.command(
-    name="daily"
-)
+@bot.command()
 async def daily(ctx):
 
+    user_id = ctx.author.id
+
     ensure_user(
-        ctx.author.id
+        user_id
     )
 
     cursor.execute(
-        """
-        SELECT last_daily
-        FROM users
-        WHERE user_id = ?
-        """,
-        (ctx.author.id,)
+        "SELECT last_daily FROM users WHERE user_id = ?",
+        (user_id,)
     )
 
     row = cursor.fetchone()
@@ -1555,50 +1094,37 @@ async def daily(ctx):
     if row and row[0]:
 
         try:
-
-            last = datetime.fromisoformat(
+            last_daily = datetime.fromisoformat(
                 row[0]
             )
 
-            if now - last < timedelta(
+            cooldown = timedelta(
                 hours=24
-            ):
+            )
 
-                remaining = (
-                    timedelta(hours=24)
-                    - (now - last)
+            if now - last_daily < cooldown:
+
+                remaining = cooldown - (
+                    now - last_daily
                 )
 
                 hours = int(
-                    remaining.total_seconds()
-                    // 3600
+                    remaining.total_seconds() // 3600
                 )
 
                 minutes = int(
-                    (
-                        remaining.total_seconds()
-                        % 3600
-                    ) // 60
+                    (remaining.total_seconds() % 3600) // 60
                 )
 
                 await ctx.send(
-
-                    (
-                        "⏳ Bạn đã nhận Daily rồi.\n"
-                        f"Thử lại sau "
-                        f"**{hours}h {minutes}m**."
-                    )
+                    f"⏳ Bạn đã nhận Daily rồi. "
+                    f"Còn **{hours}h {minutes}m**."
                 )
 
                 return
 
-        except Exception:
-
+        except ValueError:
             pass
-
-    # =====================================================
-    # DAILY RANDOM
-    # =====================================================
 
     reward = random.randint(
         50_000,
@@ -1606,7 +1132,7 @@ async def daily(ctx):
     )
 
     add_vnd(
-        ctx.author.id,
+        user_id,
         reward
     )
 
@@ -1618,19 +1144,68 @@ async def daily(ctx):
         """,
         (
             now.isoformat(),
-            ctx.author.id
+            user_id
         )
     )
 
     db.commit()
 
     await ctx.send(
+        f"🎁 Bạn nhận được **{money(reward)} VND** từ Daily!"
+    )
 
-        (
-            "🎁 **Daily thành công!**\n"
-            f"💰 Nhận được "
-            f"**{money(reward)} VND**."
+
+# =========================================================
+# !DEPOSIT
+# =========================================================
+
+@bot.command()
+async def deposit(
+    ctx,
+    amount: str
+):
+
+    amount = parse_money(
+        amount
+    )
+
+    if amount is None or amount <= 0:
+
+        await ctx.send(
+            "❌ Số tiền không hợp lệ."
         )
+
+        return
+
+    await ctx.send(
+        "⚠️ Deposit hiện chưa được kết nối với hệ thống ngân hàng."
+    )
+
+
+# =========================================================
+# !WITHDRAW
+# =========================================================
+
+@bot.command()
+async def withdraw(
+    ctx,
+    amount: str
+):
+
+    amount = parse_money(
+        amount
+    )
+
+    if amount is None or amount <= 0:
+
+        await ctx.send(
+            "❌ Số tiền không hợp lệ."
+        )
+
+        return
+
+    await ctx.send(
+        "⚠️ Withdraw hiện chưa được kết nối với hệ thống ngân hàng."
     )
 
 
@@ -1638,9 +1213,7 @@ async def daily(ctx):
 # !HELP
 # =========================================================
 
-@bot.command(
-    name="help"
-)
+@bot.command(name="help")
 async def help_command(ctx):
 
     embed = discord.Embed(
@@ -1655,7 +1228,9 @@ async def help_command(ctx):
         "`!pay @user <số tiền>` — Chuyển tiền\n"
         "`!daily` — Nhận Daily\n"
         "`!deposit <số tiền>` — Deposit\n"
-        "`!withdraw <số tiền>` — Withdraw"
+        "`!withdraw <số tiền>` — Withdraw\n\n"
+        "💡 Có thể nhập tiền dạng:\n"
+        "`100k` `10m` `1b` `1t`"
     )
 
     await ctx.send(
@@ -1664,14 +1239,14 @@ async def help_command(ctx):
 
 
 # =========================================================
-# ON READY
+# READY
 # =========================================================
 
 @bot.event
 async def on_ready():
 
     print(
-        f"✅ Đăng nhập thành công: {bot.user}"
+        f"✅ Đăng nhập: {bot.user}"
     )
 
     print(
@@ -1680,21 +1255,14 @@ async def on_ready():
 
 
 # =========================================================
-# MESSAGE DEBUG
+# MESSAGE LOG
 # =========================================================
 
 @bot.event
-async def on_message(
-    message
-):
+async def on_message(message):
 
     if message.author.bot:
         return
-
-    print(
-        f"📩 {message.author}: "
-        f"{message.content}"
-    )
 
     await bot.process_commands(
         message
@@ -1702,7 +1270,7 @@ async def on_message(
 
 
 # =========================================================
-# START BOT
+# RUN
 # =========================================================
 
 if not TOKEN:
