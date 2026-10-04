@@ -392,10 +392,6 @@ async def stock_cmd(ctx):
     await ctx.send(embed=e, view=MainView())
 
 
-@bot.command(name="stock")
-async def stock_cmd(ctx):
-    e=discord.Embed(title='📈 GLOBAL STOCK MARKET',description='Chọn nút bên dưới để giao dịch.',color=discord.Color.blurple()); e.add_field(name='🏦 Các sàn',value='NYSE • NASDAQ • HOSE • HNX • TSE • HKEX'); e.add_field(name='💰 Tiền',value='VND • USD • BTC'); e.set_footer(text='⚠️ Tất cả đều là tiền và giá giả lập.'); await ctx.send(embed=e,view=MainView())
-
 @bot.command(name="balance")
 async def balance(ctx):
     u=user(ctx.author.id); await ctx.send(f'🏦 **TÀI KHOẢN**\n\n🇻🇳 VND: **{fmt(u[1])} ₫**\n🇺🇸 USD: **${u[2]:,.2f}**\n₿ BTC: **{u[3]:.8f}**')
