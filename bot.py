@@ -160,9 +160,12 @@ def parse_money(value):
     try:
         if value[-1] in multipliers:
             number = float(value[:-1])
-            amount = int(number * multipliers[value[-1]])
+            amount = int(
+                number * multipliers[value[-1]]
+            )
         else:
-            value = value.replace(".", "").replace(",", "")
+            value = value.replace(".", "")
+            value = value.replace(",", "")
             amount = int(value)
 
         if amount < 0:
@@ -175,22 +178,33 @@ def parse_money(value):
 
 
 # =========================================================
-# USER DATABASE FUNCTIONS
+# USER DATABASE
 # =========================================================
 
 def ensure_user(user_id):
+
     cursor.execute(
-        "INSERT OR IGNORE INTO users (user_id, vnd, usd, btc) VALUES (?, 0, 0, 0)",
+        """
+        INSERT OR IGNORE INTO users
+        (user_id, vnd, usd, btc, last_daily)
+        VALUES (?, 0, 0, 0, NULL)
+        """,
         (user_id,)
     )
+
     db.commit()
 
 
 def get_vnd(user_id):
+
     ensure_user(user_id)
 
     cursor.execute(
-        "SELECT vnd FROM users WHERE user_id = ?",
+        """
+        SELECT vnd
+        FROM users
+        WHERE user_id = ?
+        """,
         (user_id,)
     )
 
@@ -203,22 +217,32 @@ def get_vnd(user_id):
 
 
 def add_vnd(user_id, amount):
+
     ensure_user(user_id)
 
     cursor.execute(
-        "UPDATE users SET vnd = vnd + ? WHERE user_id = ?",
-        (amount, user_id)
+        """
+        UPDATE users
+        SET vnd = vnd + ?
+        WHERE user_id = ?
+        """,
+        (int(amount), user_id)
     )
 
     db.commit()
 
 
 def set_vnd(user_id, amount):
+
     ensure_user(user_id)
 
     cursor.execute(
-        "UPDATE users SET vnd = ? WHERE user_id = ?",
-        (amount, user_id)
+        """
+        UPDATE users
+        SET vnd = ?
+        WHERE user_id = ?
+        """,
+        (int(amount), user_id)
     )
 
     db.commit()
@@ -229,11 +253,13 @@ def set_vnd(user_id, amount):
 # =========================================================
 
 def get_exchange_cash(user_id, exchange):
+
     cursor.execute(
         """
         SELECT vnd
         FROM exchange_cash
-        WHERE user_id = ? AND exchange = ?
+        WHERE user_id = ?
+        AND exchange = ?
         """,
         (user_id, exchange)
     )
@@ -247,14 +273,21 @@ def get_exchange_cash(user_id, exchange):
 
 
 def set_exchange_cash(user_id, exchange, amount):
+
     cursor.execute(
         """
-        INSERT INTO exchange_cash (user_id, exchange, vnd)
+        INSERT INTO exchange_cash
+        (user_id, exchange, vnd)
         VALUES (?, ?, ?)
+
         ON CONFLICT(user_id, exchange)
         DO UPDATE SET vnd = excluded.vnd
         """,
-        (user_id, exchange, int(amount))
+        (
+            user_id,
+            exchange,
+            int(amount)
+        )
     )
 
     db.commit()
@@ -265,20 +298,32 @@ def set_exchange_cash(user_id, exchange, amount):
 # =========================================================
 
 def generate_movement(capital):
+
     if capital <= 0:
         return 0
 
     # 70% tăng
     if random.random() < 0.70:
-        percent = random.uniform(0.005, 0.05)
+
+        percent = random.uniform(
+            0.005,
+            0.05
+        )
 
     # 30% giảm
     else:
-        percent = random.uniform(-0.005, -0.02)
 
-    delta = int(capital * percent)
+        percent = random.uniform(
+            -0.02,
+            -0.005
+        )
+
+    delta = int(
+        capital * percent
+    )
 
     if delta == 0:
+
         if percent > 0:
             delta = 1000
         else:
@@ -288,7 +333,7 @@ def generate_movement(capital):
 
 
 # =========================================================
-# SESSION
+# SESSIONS
 # =========================================================
 
 sessions = {}
@@ -299,22 +344,39 @@ sessions = {}
 # =========================================================
 
 def make_market_embed(session):
+
     capital = get_exchange_cash(
         session["user_id"],
         session["exchange"]
     )
 
-    delta = session.get("delta", 0)
+    delta = session.get(
+        "delta",
+        0
+    )
 
     if delta > 0:
-        change_text = f"🟢 +{money(delta)} VND"
+
+        change_text = (
+            f"🟢 +{money(delta)} VND"
+        )
+
     elif delta < 0:
-        change_text = f"🔴 -{money(abs(delta))} VND"
+
+        change_text = (
+            f"🔴 -{money(abs(delta))} VND"
+        )
+
     else:
+
         change_text = "⚪ 0 VND"
 
     embed = discord.Embed(
-        color=discord.Color.green() if delta >= 0 else discord.Color.red()
+        color=(
+            discord.Color.green()
+            if delta >= 0
+            else discord.Color.red()
+        )
     )
 
     embed.add_field(
@@ -351,15 +413,34 @@ def make_market_embed(session):
 
 
 # =========================================================
-# TAKE VIEW
+# MARKET VIEW
 # =========================================================
 
 class MarketView(ui.View):
 
     def __init__(self, session):
-        super().__init__(timeout=None)
+
+        super().__init__(
+            timeout=None
+        )
 
         self.session = session
+
+    async def interaction_check(
+        self,
+        interaction: discord.Interaction
+    ):
+
+        if interaction.user.id != self.session["user_id"]:
+
+            await interaction.response.send_message(
+                "❌ Đây không phải bảng giao dịch của bạn.",
+                ephemeral=True
+            )
+
+            return False
+
+        return True
 
     @ui.button(
         label="Take",
@@ -369,83 +450,157 @@ class MarketView(ui.View):
     async def take(
         self,
         interaction: discord.Interaction,
-        button: ui.Button
+        button: discord.ui.Button
     ):
 
-        session = self.session
+        message_id = interaction.message.id
 
-        if session["ended"] or session["crashed"]:
+        session = sessions.get(
+            message_id
+        )
+
+        if session is None:
+
+            await interaction.response.send_message(
+                "❌ Phiên giao dịch không còn tồn tại.",
+                ephemeral=True
+            )
+
+            return
+
+        if session["ended"]:
+
             await interaction.response.send_message(
                 "❌ Phiên giao dịch đã kết thúc.",
                 ephemeral=True
             )
+
             return
 
-        if interaction.user.id != session["user_id"]:
+        if session["crashed"]:
+
             await interaction.response.send_message(
-                "❌ Đây không phải phiên giao dịch của bạn.",
+                "💥 Sàn đã sập.",
                 ephemeral=True
             )
+
             return
+
+        user_id = session["user_id"]
+        exchange = session["exchange"]
+
+        # =============================================
+        # VỐN BAN ĐẦU
+        # =============================================
+
+        original_capital = session[
+            "original_capital"
+        ]
+
+        # =============================================
+        # TIỀN HIỆN TẠI
+        # =============================================
+
+        amount = get_exchange_cash(
+            user_id,
+            exchange
+        )
+
+        if amount <= 0:
+
+            await interaction.response.send_message(
+                "❌ Không còn tiền trên sàn.",
+                ephemeral=True
+            )
+
+            return
+
+        # =============================================
+        # TÍNH LỜI / LỖ
+        # =============================================
+
+        difference = (
+            amount - original_capital
+        )
+
+        if difference > 0:
+
+            profit_text = (
+                f"+{money(difference)} VND"
+            )
+
+            loss_text = "N/A"
+
+        elif difference < 0:
+
+            profit_text = "N/A"
+
+            loss_text = (
+                f"-{money(abs(difference))} VND"
+            )
+
+        else:
+
+            profit_text = "N/A"
+            loss_text = "N/A"
+
+        # =============================================
+        # KẾT THÚC PHIÊN
+        # =============================================
 
         session["ended"] = True
 
         # Dừng market
-        market_task = session.get("market_task")
+        market_task = session.get(
+            "market_task"
+        )
 
-        if market_task:
+        if (
+            market_task
+            and not market_task.done()
+        ):
+
             market_task.cancel()
 
         # Dừng crash timer
-        crash_task = session.get("crash_task")
-
-        if crash_task:
-            crash_task.cancel()
-
-        exchange = session["exchange"]
-
-        # Vốn ban đầu
-        original_capital = session["original_capital"]
-
-        # Vốn hiện tại
-        amount = get_exchange_cash(
-            self.user_id,
-            exchange
+        crash_task = session.get(
+            "crash_task"
         )
 
-        # Tính lời / lỗ
-        difference = amount - original_capital
+        if (
+            crash_task
+            and not crash_task.done()
+        ):
 
-        if difference > 0:
-            profit_text = f"+{money(difference)} VND"
-            loss_text = "N/A"
+            crash_task.cancel()
 
-        elif difference < 0:
-            profit_text = "N/A"
-            loss_text = f"-{money(abs(difference))} VND"
+        # =============================================
+        # XÓA TIỀN KHỎI SÀN
+        # =============================================
 
-        else:
-            profit_text = "N/A"
-            loss_text = "N/A"
-
-        # Xóa tiền khỏi sàn
         set_exchange_cash(
-            self.user_id,
+            user_id,
             exchange,
             0
         )
 
-        # Trả tiền về ví
+        # =============================================
+        # TRẢ TIỀN VỀ VÍ
+        # =============================================
+
         add_vnd(
-            self.user_id,
+            user_id,
             amount
         )
 
-        # Xóa session
-        message = session.get("message")
+        # =============================================
+        # XÓA SESSION
+        # =============================================
 
-        if message:
-            sessions.pop(message.id, None)
+        sessions.pop(
+            message_id,
+            None
+        )
 
         # =============================================
         # BẢNG MỚI
@@ -495,7 +650,7 @@ class MarketView(ui.View):
             inline=True
         )
 
-        # Xóa toàn bộ bảng cũ và thay bằng bảng mới
+        # XÓA BẢNG CŨ
         await interaction.response.edit_message(
             content=None,
             embed=embed,
@@ -518,7 +673,10 @@ async def market_loop(session):
 
             await asyncio.sleep(1)
 
-            if session["ended"] or session["crashed"]:
+            if (
+                session["ended"]
+                or session["crashed"]
+            ):
                 break
 
             user_id = session["user_id"]
@@ -550,7 +708,9 @@ async def market_loop(session):
             session["capital"] = new_money
             session["delta"] = delta
 
-            message = session.get("message")
+            message = session.get(
+                "message"
+            )
 
             if message is None:
                 continue
@@ -558,7 +718,10 @@ async def market_loop(session):
             try:
 
                 await message.edit(
-                    embed=make_market_embed(session),
+                    content=None,
+                    embed=make_market_embed(
+                        session
+                    ),
                     view=session["view"]
                 )
 
@@ -580,6 +743,7 @@ async def market_loop(session):
                 )
 
     except asyncio.CancelledError:
+
         return
 
     except Exception as e:
@@ -598,10 +762,17 @@ async def crash_timer(session):
 
     try:
 
-        # Sập sàn random 30 - 60 giây
+        # Sập random sau 30 - 60 giây
         wait_time = random.randint(
             30,
             60
+        )
+
+        print(
+            f"💥 Crash timer: "
+            f"{session['exchange']} "
+            f"{session['symbol']} "
+            f"-> {wait_time}s"
         )
 
         await asyncio.sleep(
@@ -625,7 +796,10 @@ async def crash_timer(session):
         if current_money <= 0:
             return
 
-        # Mất 40% - 100%
+        # =============================================
+        # MẤT 40% - 100%
+        # =============================================
+
         loss_percent = random.uniform(
             0.40,
             1.00
@@ -640,6 +814,10 @@ async def crash_timer(session):
             current_money - crash_loss
         )
 
+        # =============================================
+        # LƯU TIỀN SAU SẬP
+        # =============================================
+
         set_exchange_cash(
             user_id,
             exchange,
@@ -651,34 +829,67 @@ async def crash_timer(session):
         session["crashed"] = True
         session["ended"] = True
 
-        # Dừng market loop
+        # =============================================
+        # DỪNG MARKET
+        # =============================================
+
         market_task = session.get(
             "market_task"
         )
 
-        if market_task:
+        if (
+            market_task
+            and not market_task.done()
+        ):
+
             market_task.cancel()
 
-        message = session.get("message")
+        # =============================================
+        # HIỂN THỊ SẬP SÀN
+        # =============================================
+
+        message = session.get(
+            "message"
+        )
 
         if message:
 
             embed = discord.Embed(
-                title="💥 SẬP SÀN",
                 color=discord.Color.red()
             )
 
-            embed.description = (
-                f"🏦 **Sàn:** {exchange}\n"
-                f"📈 **Cổ phiếu:** {session['symbol']}\n"
-                f"🏢 **Công ty:** {session['company']}\n\n"
-                f"💥 **Tiền mất:** "
-                f"**{money(crash_loss)} VND**\n"
-                f"💰 **Còn lại:** "
-                f"**{money(remaining)} VND**"
+            embed.add_field(
+                name="💥 Sập sàn",
+                value=exchange,
+                inline=False
+            )
+
+            embed.add_field(
+                name="📈 Cổ phiếu",
+                value=session["symbol"],
+                inline=True
+            )
+
+            embed.add_field(
+                name="🏢 Công ty",
+                value=session["company"],
+                inline=True
+            )
+
+            embed.add_field(
+                name="💸 Tiền mất",
+                value=f"**-{money(crash_loss)} VND**",
+                inline=False
+            )
+
+            embed.add_field(
+                name="💰 Còn lại",
+                value=f"**{money(remaining)} VND**",
+                inline=False
             )
 
             await message.edit(
+                content=None,
                 embed=embed,
                 view=None
             )
@@ -689,12 +900,13 @@ async def crash_timer(session):
             )
 
     except asyncio.CancelledError:
+
         return
 
     except Exception as e:
 
         print(
-            f"❌ CRASH TIMER ERROR: "
+            f"❌ CRASH ERROR: "
             f"{type(e).__name__}: {e}"
         )
 
@@ -741,7 +953,10 @@ class CapitalModal(ui.Modal):
             self.amount.value
         )
 
-        if capital is None or capital <= 0:
+        if (
+            capital is None
+            or capital <= 0
+        ):
 
             await interaction.response.send_message(
                 "❌ Số tiền không hợp lệ.",
@@ -763,20 +978,29 @@ class CapitalModal(ui.Modal):
 
             return
 
-        # Trừ tiền ví
+        # =============================================
+        # TRỪ TIỀN VÍ
+        # =============================================
+
         set_vnd(
             self.user_id,
             wallet - capital
         )
 
-        # Đưa tiền vào sàn
+        # =============================================
+        # ĐƯA TIỀN VÀO SÀN
+        # =============================================
+
         set_exchange_cash(
             self.user_id,
             self.exchange,
             capital
         )
 
-        # Session
+        # =============================================
+        # SESSION
+        # =============================================
+
         session = {
             "user_id": self.user_id,
 
@@ -784,10 +1008,10 @@ class CapitalModal(ui.Modal):
             "symbol": self.symbol,
             "company": self.company,
 
-            # QUAN TRỌNG:
-            # giữ vốn ban đầu để tính lời/lỗ
+            # Vốn ban đầu
             "original_capital": capital,
 
+            # Vốn hiện tại
             "capital": capital,
 
             "delta": 0,
@@ -804,42 +1028,68 @@ class CapitalModal(ui.Modal):
             "crash_task": None
         }
 
-        # View
-        view = MarketView(
+        # =============================================
+        # VIEW
+        # =============================================
+
+        market_view = MarketView(
             session
         )
 
-        session["view"] = view
+        session["view"] = market_view
 
-        # Embed
-        embed = make_market_embed(
-            session
-        )
+        # =============================================
+        # BẢNG THỊ TRƯỜNG
+        # =============================================
 
         await interaction.response.edit_message(
             content=None,
-            embed=embed,
-            view=view
+            embed=make_market_embed(
+                session
+            ),
+            view=market_view
         )
 
-        # Lấy message hiện tại
-        message = await interaction.original_response()
+        # =============================================
+        # LẤY MESSAGE
+        # =============================================
+
+        try:
+
+            message = await interaction.original_response()
+
+        except Exception:
+
+            message = interaction.message
 
         session["message"] = message
 
-        # Lưu session
+        # =============================================
+        # LƯU SESSION
+        # =============================================
+
         sessions[
             message.id
         ] = session
 
-        # Chạy market
+        # =============================================
+        # MARKET TASK
+        # =============================================
+
         session["market_task"] = asyncio.create_task(
-            market_loop(session)
+            market_loop(
+                session
+            )
         )
 
-        # Chạy crash timer
+        # =============================================
+        # CRASH TASK
+        # =============================================
+
         session["crash_task"] = asyncio.create_task(
-            crash_timer(session)
+            crash_timer(
+                session
+            )
         )
 
 
@@ -881,6 +1131,7 @@ class StockSelect(ui.Select):
         for s, c in STOCKS[self.exchange]:
 
             if s == symbol:
+
                 company = c
                 break
 
@@ -946,8 +1197,11 @@ class ExchangeSelect(ui.Select):
         )
 
         await interaction.response.edit_message(
+            content=None,
             embed=embed,
-            view=StockSelectView(exchange)
+            view=StockSelectView(
+                exchange
+            )
         )
 
 
@@ -973,7 +1227,8 @@ async def stock(ctx):
 
     embed = discord.Embed(
         title="📈 STOCK MARKET",
-        description="Chọn sàn giao dịch bên dưới."
+        description="Chọn sàn giao dịch bên dưới.",
+        color=discord.Color.blurple()
     )
 
     await ctx.send(
@@ -1024,7 +1279,10 @@ async def pay(
         amount
     )
 
-    if amount is None or amount <= 0:
+    if (
+        amount is None
+        or amount <= 0
+    ):
 
         await ctx.send(
             "❌ Số tiền không hợp lệ."
@@ -1083,7 +1341,11 @@ async def daily(ctx):
     )
 
     cursor.execute(
-        "SELECT last_daily FROM users WHERE user_id = ?",
+        """
+        SELECT last_daily
+        FROM users
+        WHERE user_id = ?
+        """,
         (user_id,)
     )
 
@@ -1094,6 +1356,7 @@ async def daily(ctx):
     if row and row[0]:
 
         try:
+
             last_daily = datetime.fromisoformat(
                 row[0]
             )
@@ -1104,16 +1367,22 @@ async def daily(ctx):
 
             if now - last_daily < cooldown:
 
-                remaining = cooldown - (
-                    now - last_daily
+                remaining = (
+                    cooldown
+                    - (now - last_daily)
                 )
 
                 hours = int(
-                    remaining.total_seconds() // 3600
+                    remaining.total_seconds()
+                    // 3600
                 )
 
                 minutes = int(
-                    (remaining.total_seconds() % 3600) // 60
+                    (
+                        remaining.total_seconds()
+                        % 3600
+                    )
+                    // 60
                 )
 
                 await ctx.send(
@@ -1124,8 +1393,10 @@ async def daily(ctx):
                 return
 
         except ValueError:
+
             pass
 
+    # Random 50k -> 500k
     reward = random.randint(
         50_000,
         500_000
@@ -1151,7 +1422,8 @@ async def daily(ctx):
     db.commit()
 
     await ctx.send(
-        f"🎁 Bạn nhận được **{money(reward)} VND** từ Daily!"
+        f"🎁 Bạn nhận được "
+        f"**{money(reward)} VND** từ Daily!"
     )
 
 
@@ -1169,7 +1441,10 @@ async def deposit(
         amount
     )
 
-    if amount is None or amount <= 0:
+    if (
+        amount is None
+        or amount <= 0
+    ):
 
         await ctx.send(
             "❌ Số tiền không hợp lệ."
@@ -1196,7 +1471,10 @@ async def withdraw(
         amount
     )
 
-    if amount is None or amount <= 0:
+    if (
+        amount is None
+        or amount <= 0
+    ):
 
         await ctx.send(
             "❌ Số tiền không hợp lệ."
@@ -1255,7 +1533,7 @@ async def on_ready():
 
 
 # =========================================================
-# MESSAGE LOG
+# MESSAGE
 # =========================================================
 
 @bot.event
