@@ -2,7 +2,7 @@ import discord
 from discord.ext import commands, tasks
 import sqlite3, random, time, os
 
-TOKEN = os.getenv('TOKEN', 'DAN_TOKEN_BOT_VAO_DAY')
+TOKEN = os.getenv('TOKEN', 'MTU1NjE4OTM1OTcxODUzNTI2OA.GRLWwU.GK_e8NVQK-3tEUxhYFUv941kJLUUKZwfXVKkqk')
 db = sqlite3.connect('stockbot.db')
 cur = db.cursor()
 cur.execute('CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, vnd REAL DEFAULT 10000000, usd REAL DEFAULT 1000, btc REAL DEFAULT 0, last_daily INTEGER DEFAULT 0)')
